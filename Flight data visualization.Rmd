@@ -1,0 +1,162 @@
+---
+title: "Visualize flight data"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(forcats)
+library(patchwork)
+library(usmap)
+library(rgdal)
+```
+
+```{r echo = FALSE, , warnings = FALSE, results = FALSE, output = FALSE}
+flights = read.csv('https://raw.githubusercontent.com/jgscott/STA380/master/data/ABIA.csv')
+
+airport_loc <- read.delim('https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat', header = FALSE, sep = ",")
+
+airport_loc = airport_loc[, c(5, 7, 8)]
+colnames(airport_loc) <- c('Dest', 'Lat', 'Lon')
+airport_loc$Origin = airport_loc$Dest
+airport_loc$Lat = round(airport_loc$Lat, 2)
+airport_loc$Lon = round(airport_loc$Lon, 2)
+
+into_mask = flights$Dest == 'AUS'
+flights$into = factor(ifelse(into_mask, 'In', 'Out'))
+
+head(flights)
+
+flights_into = flights[flights$into == 'In', ]
+flights_out = flights[flights$into == 'Out', ]
+
+flights_into <- left_join(flights_into, airport_loc[, -1], by = 'Origin')
+flights_out <- left_join(flights_out, airport_loc[, -4], by = 'Dest')
+```
+
+
+```{r echo = FALSE, warnings = FALSE, message = FALSE}
+flights %>% 
+  filter(!is.na(DepDelay)) %>% 
+  filter(!is.na(ArrDelay)) %>% 
+  group_by(into) %>%
+  summarize(
+    num_flights = n(),
+    mean_dep_delay = mean(DepDelay),
+    mean_arr_delay = mean(ArrDelay),
+    mean_time = mean(ActualElapsedTime),
+    mean_distance = mean(Distance)
+  )
+
+```
+This summary table shows the total number of flights, the mean departure delay, the mean arrival delay, the mean total time and mean distance divided by flights in and out of Austin.
+
+```{r echo = FALSE, warnings = FALSE, message = FALSE}
+delay_table <- flights %>%
+  filter(!is.na(ActualElapsedTime)) %>% 
+  filter(!is.na(AirTime)) %>%
+  group_by(into, UniqueCarrier) %>%
+  summarize(
+    mean_wasted_time = mean(ActualElapsedTime) - mean(AirTime)
+  ) 
+
+delay_table %>% pivot_wider(names_from = 'UniqueCarrier', values_from = 'mean_wasted_time')
+
+```
+This summary table shows the difference in total time and air time for each carrier for both arrivals and departures.
+
+```{r echo = FALSE, warnings = FALSE, message = FALSE}
+delay_table %>% ggplot() +
+  aes(x = reorder(UniqueCarrier, mean_wasted_time), y = mean_wasted_time, fill = into) +
+  geom_bar(stat = 'identity', position = 'dodge') +
+  xlab('Carrier') +
+  ylab('Time Not Spent in Air') +
+  theme(legend.title = element_blank())
+```
+  
+  The plot is a visualization of the last summary table. It looks like there are more time delays for arrivals than departures.
+
+
+```{r echo = FALSE, warning = FALSE}
+flights %>% ggplot() +
+  aes(x = Distance, y = ActualElapsedTime, color = UniqueCarrier) +
+  geom_point() +
+  ylab('Total Time') +
+  ggtitle('Total Time vs Distance by Carrier') +
+  labs(fill = 'Carrier') +
+  theme_minimal()
+```
+  
+  This plot shows the total time of a flight vs the distance of the flight. It also colors each dot according to its airline. The plot is somewhat messy and hard to read, but it is easy to tell that since the individual distances are the same color, flights to a certain place are completed mostly by a single airline, except for a few select distances. The times also have a wide range for each distance.
+
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+group_dest_out <- flights_out %>% group_by(Dest) %>%
+  summarize(
+  num_count = n()
+  ) 
+
+group_dest_out <- group_dest_out[order(-group_dest_out$num_count), ] 
+
+group_dest_out <- group_dest_out[c(1:15),] %>%
+  ggplot() +
+  aes(x = fct_rev(fct_reorder(Dest, num_count)), y = num_count) +
+  geom_bar(stat = 'identity') +
+  ggtitle('# of Flights into Austin By Destination') +
+  xlab(NULL) +
+  ylab('Count') +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+group_orig_in <- flights_into %>% group_by(Origin) %>%
+  summarize(
+  num_count = n()
+  ) 
+
+group_orig_in <- group_orig_in[order(-group_orig_in$num_count), ] 
+
+group_orig_in <- group_orig_in[c(1:15),] %>%
+  ggplot() +
+  aes(x = fct_rev(fct_reorder(Origin, num_count)), y = num_count) +
+  geom_bar(stat = 'identity') +
+  ggtitle('# of Flights out Austin By Origin') +
+  xlab(NULL) +
+  ylab(NULL) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+group_dest_out + group_orig_in
+```
+  
+  This plot almost looks like the same exact plot repeated twice, but they are slightly different numbers. It shows that flights coming into Austin are most likely going back to the same place that they came from. Most of the flights are going to DFW or DAL Love Field.
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+airport_map = airport_loc %>%
+  select(Lon, Lat) %>%
+  usmap_transform
+
+flight_in_map <- flights_into %>% group_by(Origin) %>%
+  summarize(
+   count = n()
+  )
+
+updated_lonlat <- left_join(airport_loc, airport_map, by = c('Lon', 'Lat'))
+
+final_lonlat <- left_join(flight_in_map, updated_lonlat, by= 'Origin')
+
+p0 = plot_usmap(regions = 'states')
+  
+p0 + 
+  geom_point(data = updated_lonlat[3474,], aes(x = as.numeric(Lon.1), y = as.numeric(Lat.1), fill = 'black', shape = 18, size = 2000)) +
+  geom_point(data = final_lonlat, aes(x = as.numeric(Lon.1), y = as.numeric(Lat.1), size = count, color = 'blue')) +
+  scale_shape_identity() +
+  theme(legend.position = "none") +
+  ggtitle('Flights to Austin')
+
+
+```
+  
+  This plot shows all of the places that fly into Austin. Austin is designated with a black diamond, and all of the other airports are circles. The size of the circle is related to the total number of flights into Austin.
